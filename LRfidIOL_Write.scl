@@ -88,6 +88,9 @@ BEGIN
 	    #busy := false;
 	    #error := false;
 	    #status := 0;
+	ELSIF #execute AND #statDone THEN
+	    #error := FALSE;
+	    #status := 12;
 	ELSE
 	    #done := #statDone;
 	    #busy := #statBusy;
@@ -185,7 +188,7 @@ BEGIN
 	            
 	            IF #statStatusBits[7] AND #statStatusBits[0] THEN
 	                IF #statRecDat[2] = #statAdrWrite[0] AND #statRecDat[3] = #statAdrWrite[1] THEN //received ADR must be ==sent ADR
-	                  
+	                    
 	                    IF NOT #statIoPartError THEN
 	                        IF #statStatusBits[7] AND NOT #statStatusBits[6] THEN
 	                            #statLength := #statLength - 28;
@@ -207,7 +210,7 @@ BEGIN
 	                    END_IF;
 	                END_IF;
 	            END_IF;
-	           
+	            
 	            #InstSetIoPart(ID := #hwId,
 	                           OFFSET := #statAdrOffset,
 	                           LEN := 32,
@@ -248,8 +251,8 @@ BEGIN
 	//------------------------------------------------------------------------------------------------------------//
 	
 	#instTonR(IN := #statTimerIn,               //this timer will start, if the tag has left the antenna field
-	                        R := #statTimerR,
-	                        PT := #statTimerPt);
+	          R := #statTimerR,
+	          PT := #statTimerPt);
 	IF #instTonR.Q THEN                      //error has occured. No tag on field during the 5 sec.
 	    #tempStatus_W[1] := 16#8101;                              //tag has left the field
 	    #tempStatus_W[0] := 16#0001;                              //identifier rfid errors
