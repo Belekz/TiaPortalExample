@@ -1,0 +1,155 @@
+﻿FUNCTION_BLOCK "LRfidIOL_Antenna"
+TITLE = LRfidIOL_ANT
+{ S7_Optimized_Access := 'FALSE' }
+FAMILY : 'S7-1500'
+VERSION : 3.1
+//Set Antenna
+//IO-Link V1.1
+   VAR_INPUT 
+      execute : Bool;   // start process
+      antenna : Bool;   // set/reset antenna bit
+      hwId : HW_SUBMODULE;   // Hardware identifier
+      portAdr : Int;   // Start address of port
+   END_VAR
+
+   VAR_OUTPUT 
+      done : Bool;   // Ready
+      busy : Bool;   // Block active
+      error : Bool;   // Error has occured
+      status : DWord;   // error status
+      statusWord { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} AT status : Array[0..1] of Word;
+      presence : Bool;
+   END_VAR
+
+   VAR 
+      statExecuteReq : Bool;   // positive edge og execute
+      statAntByte : Byte;   // Byte 0, Status byte
+      statAntBit { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} AT statAntByte : Array[0..7] of Bool;
+      statNState : Int;   // current state
+      statLastState : Int;   // last state
+      statAntennaOn : Int := 1;   // On state
+      statAntennaOff : Int := 2;   // OFF state
+      statReadyState : Int := 3;
+      statAnt : Array[0..31] of Byte;   // received buffer
+      statAdrOffset : Int;   // step for FOR
+      statSent : Array[0..31] of Byte;   // sent buffer
+      statPresenceBit : Bool;
+      statBusy : Bool;
+      InstSetIoPart {InstructionName := 'SETIO_PART'; LibVersion := '1.1'} : SETIO_PART;
+      statIoPartError : Bool;
+      statIoPartStatus : DWord;
+      InstGetIoPart {InstructionName := 'GETIO_PART'; LibVersion := '1.1'} : GETIO_PART;
+   END_VAR
+
+   VAR_TEMP 
+      tempDone : Bool;
+      tempError : Bool;
+      tempStatus : DWord;
+      tempStatus_W AT tempStatus : Array[0..1] of Word;
+   END_VAR
+
+
+BEGIN
+	#statAdrOffset:=#portAdr;                                //start adress of port
+	#InstGetIoPart(ID := #hwId,                              //read data from process image
+	               OFFSET := #statAdrOffset,
+	               LEN := 32,
+	               STATUS => #statIoPartStatus,
+	               ERROR => #statIoPartError,
+	               INPUTS := #statAnt);
+	#statAntByte:=#statAnt[0];                  //status byte
+	#statPresenceBit := #statAntBit[5];                 //Presence bit. Transponder on field
+	#presence := #statPresenceBit;
+	#busy := #statBusy;
+	
+	//------------------------------------If error byte<>0--------------------------------------------------//
+	//------------------------------------save the rfid error-----------------------------------------------//
+	
+	IF #statAnt[1]<>0 AND #statBusy THEN
+	  #statAntByte:=#statAnt[1];  
+	   #statusWord[1]:=BYTE_TO_WORD(#statAntByte);    //error_BLK
+	   #statusWord[0]:=16#0011;                    //identifier rfid errors
+	   #statBusy:=false;
+	   #done:=false;
+	   #error:=TRUE;
+	   #statNState:=0;
+	END_IF;
+	
+	IF NOT #execute THEN
+	    #done := false;
+	    #error := false;
+	    #status := 0;
+	END_IF;
+	
+	IF #execute AND #execute<>#statExecuteReq THEN //Positive Edge for antenna on
+	  #statLastState:=0;
+	  #statBusy:=TRUE;                              //Block active
+	  #done:=FALSE;                             //reset all output parameters
+	  #error:=FALSE;
+	  #status:=0;
+	  IF #antenna THEN                          //if antenna then activate the ANTENNA_ON process
+	    #statNState:=#statAntennaOn;
+	  ELSIF NOT #antenna THEN                   //if not antenna then activate the ANTENNA_OFF process 
+	    #statNState:=#statAntennaOff;
+	  END_IF;
+	
+	END_IF;
+	#statExecuteReq:=#execute;
+	
+	
+	//---------------------------------------Antenna on state-----------------------------------------------//
+	//---------------------------------------Reset Antenna bit----------------------------------------------//
+	
+	CASE #statNState OF
+	    0:  //Idle
+	        ;
+	    1:  //Antenna_on
+	                                                     //Antenna on process
+	        #statAntBit[4] := false;                        //Reset Byte 0, bit 4
+	        #statSent[0] := 16#0;
+	        #statLastState := #statAntennaOn;
+	        #InstSetIoPart(ID := #hwId,                         //Write data into process image
+	                       OFFSET := #statAdrOffset,
+	                       LEN := 32,
+	                       STATUS => #statIoPartStatus,
+	                       ERROR => #statIoPartError,
+	                       OUTPUTS := #statSent);
+	        IF NOT #statIoPartError AND #statAnt[1] = 0 THEN
+	            #statNState := #statReadyState;
+	        ELSIF #statIoPartError THEN
+	            #tempError := true;
+	            #error := #tempError;                             //error has occured
+	            #statBusy := FALSE;
+	            #tempStatus_W[1] := DWORD_TO_WORD(#statIoPartStatus);//error_BLK
+	            #tempStatus_W[0] := 16#0001;                    //identifier block errors
+	        END_IF;
+	    2:
+	                                                   //Antenna off process
+	        #statAntBit[4] := true;                         //set Byte 0, bit 4
+	        #statSent[0] := 16#10;
+	        #statLastState := #statAntennaOff;
+	        #InstSetIoPart(ID := #hwId,                         //Write data into process image
+	                       OFFSET := #statAdrOffset,
+	                       LEN := 32,
+	                       STATUS => #statIoPartStatus,
+	                       ERROR => #statIoPartError,
+	                       OUTPUTS := #statSent);
+	        IF NOT #statIoPartError AND #statAnt[1] = 0 THEN
+	            IF #statAntByte = 16#10 THEN                    //if status_byte=16#10 then antenna off
+	                #statNState := #statReadyState;
+	            END_IF;
+	        ELSIF #statIoPartError THEN
+	            #tempError := true;
+	            #error := #tempError;                              //Error has occured
+	            #statBusy := FALSE;
+	            #tempStatus_W[1] := DWORD_TO_WORD(#statIoPartStatus);//error_BLK
+	            #tempStatus_W[0] := 16#0001;                     //identifier block errors
+	        END_IF;
+	    3:
+	        #tempDone := true;
+	        #done := #tempDone;                           //Ready
+	        #statBusy := TRUE;
+	        #statNState := 0;
+	END_CASE;
+END_FUNCTION_BLOCK
+
