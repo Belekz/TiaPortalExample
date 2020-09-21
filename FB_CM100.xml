@@ -2,7 +2,7 @@
 <Document>
   <Engineering version="V16" />
   <DocumentInfo>
-    <Created>2020-09-21T20:03:55.8020765Z</Created>
+    <Created>2020-09-21T20:06:50.079873Z</Created>
     <ExportSetting>WithDefaults</ExportSetting>
     <InstalledProducts>
       <Product>
@@ -123,7 +123,9 @@
       </Symbol>
     </Access>
     <Part Name="Contact" UId="27" />
-    <Part Name="Contact" UId="28" />
+    <Part Name="Contact" UId="28">
+      <Negated Name="operand" />
+    </Part>
     <Part Name="Contact" UId="29">
       <Negated Name="operand" />
     </Part>
