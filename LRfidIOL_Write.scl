@@ -90,7 +90,7 @@ BEGIN
 	    #status := 0;
 	ELSIF #execute AND #statDone THEN
 	    #error := FALSE;
-	    #status := 12;
+	    #status := 16#12;
 	ELSE
 	    #done := #statDone;
 	    #busy := #statBusy;
