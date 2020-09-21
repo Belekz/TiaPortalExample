@@ -1,0 +1,290 @@
+﻿FUNCTION_BLOCK "LRfidIOL_Read"
+TITLE = LRfidIOL_Read
+{ S7_Optimized_Access := 'FALSE' }
+FAMILY : 'S7-1500'
+VERSION : 3.1
+//Read Data with IO-Link readers
+//IO-Link V1.1
+   VAR_INPUT 
+      execute : Bool;
+      adrTag : Word;
+      length : Word;
+      hwId : HW_SUBMODULE;
+      portAdr : Int;
+   END_VAR
+
+   VAR_OUTPUT 
+      done : Bool;
+      busy : Bool;
+      error : Bool;
+      status : DWord;
+      statusWord { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} AT status : Array[0..1] of Word;
+      presence : Bool;
+   END_VAR
+
+   VAR_IN_OUT 
+      identData : Variant;
+   END_VAR
+
+   VAR 
+      statPae : Array[0..27] of Byte;
+      statStatusByte : Byte;
+      statStatusBit { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} AT statStatusByte : Array[0..7] of Bool;
+      statPresence : Bool;
+      statState : Int;
+      statIdleState : Int;
+      statTelegramState : Int := 1;
+      statReadState : Int := 2;
+      statErrorState : Int := 3;
+      statAdr : Word;
+      statAdrRead { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} AT statAdr : Array[0..1] of Byte;
+      statOffset : Int;
+      statExecuteReq : Bool;
+      statLength : DInt;
+      statDat : Array[0..31] of Byte;
+      statRecDat : Array[0..31] of Byte;
+      statAdrOffset : Int;
+      statPresenceFF : Bool;
+      InstTonrTime {InstructionName := 'TONR_TIME'; LibVersion := '1.0'} : TONR_TIME;
+      statTimerIn : Bool;
+      statTimerR : Bool;
+      statTimerPt : Time := t#5s;
+      statReadData : Array[0..1999] of Byte;
+      statCountCopyPae : DInt;
+      statBusy : Bool;
+      statDone { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Bool;
+      statReturnMoveBlkVar : Int;
+      statDiffTo28 : Int;
+      InstSetIoPart {InstructionName := 'SETIO_PART'; LibVersion := '1.1'} : SETIO_PART;
+      statIoPartError : Bool;
+      statIoPartStatus : DWord;
+      InstGetIoPart {InstructionName := 'GETIO_PART'; LibVersion := '1.1'} : GETIO_PART;
+   END_VAR
+
+   VAR_TEMP 
+      tempError : Bool;
+      tempStatus : DWord;
+      tempStatus_W AT tempStatus : Array[0..1] of Word;
+   END_VAR
+
+
+BEGIN
+	#statAdrOffset := #portAdr;                           //start adress of port
+	#InstGetIoPart(ID:=#hwId,
+	               OFFSET:=#statAdrOffset,
+	               LEN:=32,
+	               STATUS=>#statIoPartStatus,
+	               ERROR=>#statIoPartError,
+	               INPUTS:=#statRecDat);
+	
+	#statStatusByte := #statRecDat[0];         //Status Byte
+	#statPresence := #statStatusBit[5];                     //Presence bit. Transponder on field
+	#presence := #statPresence;
+	
+	IF NOT #execute THEN
+	    #statDone := false;
+	    #statBusy := false;
+	    #done := false;
+	    #busy := false;
+	    #error := false;
+	    #status := 0;
+	ELSE
+	    #done := #statDone;
+	    #busy := #statBusy;
+	END_IF;
+	
+	IF #execute AND #execute <> #statExecuteReq THEN        //Positive edge for d#reading of data
+	    IF NOT #statBusy THEN
+	        #statAdr := #adrTag;                                    //Transpoder Adress
+	        #statDiffTo28 := WORD_TO_INT(#length) MOD 28;
+	        #statLength := #length;                                 //Length of read Dat
+	        #statBusy := TRUE;
+	        #statDone := FALSE;                                     //reset all the output parameters                                   
+	        #error := FALSE;
+	        #status := 0;
+	        #statOffset := 0;                                       //offset of puffer must be reseted
+	        #statState := #statReadState;                           //next step >> send read command
+	        #statCountCopyPae := 0;
+	    ELSE
+	        #tempStatus_W[1] := 16#8102;                            //block is still active
+	        #tempStatus_W[0] := 16#0001;                            //Error identifier for block errors
+	        #status := #tempStatus;
+	        #statState := #statErrorState;
+	    END_IF;
+	    IF #length < 0 THEN
+	        #tempStatus_W[1] := 16#8104;                             //length too short
+	        #tempStatus_W[0] := 16#0001;                             //identifier rfid errors
+	        #status := #tempStatus;
+	        #statState := #statErrorState;
+	    END_IF;
+	END_IF;
+	#statExecuteReq := #execute;
+	
+	IF NOT #presence AND #presence <> #statPresenceFF THEN   //the tag has left the antenna  field
+	    IF NOT #statDone THEN
+	        #statTimerIn := true;                              //wait 5 sec
+	        #statTimerR := false;
+	    END_IF;
+	END_IF;
+	#statPresenceFF := #presence;
+	IF #presence THEN
+	    #statTimerR := true;
+	    #statTimerIn := false;
+	END_IF;
+	//-----------------------------------------------------------------------------------------------------//
+	//------------------------------------------start of state machine------------------------------------//
+	//-----------------------------------------------------------------------------------------------------//
+	CASE #statState OF
+	    0://IDLE
+	        #statBusy := false;
+	        #statTimerIn := false;
+	        FILL_BLK(IN := 0,
+	                 COUNT := CountOfElements(#identData),
+	                 OUT => #statReadData[0]);
+	        (*
+	        // #statAdr := 0;
+	        // #statDat[0] := 16#0;                      //Set read command
+	        // #statDat[2] := #statAdrRead[0];             //Adr-H
+	        // #statDat[3] := #statAdrRead[1];             //Adr-L
+	        // #InstSetIoPart(ID:=#hwId,
+	        //                OFFSET:=#statAdrOffset,
+	        //                LEN:=8,
+	        //                STATUS=>#statIoPartStatus,
+	        //                ERROR=>#statIoPartError,
+	        //                OUTPUTS:=#statDat);
+	        *)
+	        //-------------------------------------------------Read state------------------------------------------//
+	        //---------------------------------------------sent read command---------------------------------------//
+	        //-----------------------------------------------------------------------------------------------------//
+	        
+	    2://Read_state
+	        
+	        IF #statLength > 0 THEN
+	            #statDat[0] := 16#2;                      //Set read command
+	            #statDat[2] := #statAdrRead[0];             //Adr-H
+	            #statDat[3] := #statAdrRead[1];             //Adr-L
+	        END_IF;
+	        
+	        IF NOT #statIoPartError THEN
+	            #statState := #statTelegramState;                           //Telegram: Edit the read data
+	        END_IF;
+	        
+	        
+	        //-----------------------------------------------Telegram state----------------------------------------//
+	        //---------------------------------------------edit received data--------------------------------------//
+	        //-----------------------------------------------------------------------------------------------------//  
+	        
+	    1://Telegram_state
+	        
+	        IF #statLength > 0 THEN                      //Only when length of data>0 can continue  
+	            IF #statStatusBit[6] THEN                                   //IF RFID error has occured
+	                #tempStatus_W[1] := #statRecDat[ 1];    //error_RFID
+	                #tempStatus_W[0] := 16#0011;                            //Error identifier for RFID errors
+	                #status := #tempStatus;
+	                #statState := #statErrorState;
+	            END_IF;
+	            
+	            //-------------------------- read command is ready------------------------------------------------//
+	            
+	            IF #statStatusBit[7] AND #statStatusBit[1] THEN
+	                IF #statRecDat[2] = #statAdrRead[0]
+	                    AND #statRecDat[3] = #statAdrRead[1]
+	                THEN //received ADR must be ==sent ADR
+	                    #statReturnMoveBlkVar:=MOVE_BLK_VARIANT(SRC:=#statRecDat,
+	                                                            COUNT:=28,
+	                                                            SRC_INDEX:=4,
+	                                                            DEST_INDEX:=0,
+	                                                            DEST=>#statPae);
+	                    
+	                    IF NOT #statIoPartError THEN
+	                        IF #statCountCopyPae = 0 THEN    //copy the 28 Bytes in 
+	                            IF #statLength >= 28 THEN
+	                                IF #statLength <> #length THEN
+	                                    #statAdr := INT_TO_WORD(WORD_TO_INT(#statAdr) + 28);
+	                                END_IF;
+	                                #statState := #statReadState;
+	                                #statCountCopyPae := 28;
+	                            ELSE
+	                                IF #statStatusBit[7] AND NOT #statStatusBit[6] THEN
+	                                    IF #statDiffTo28 <> 0 THEN
+	                                        #statCountCopyPae := #statDiffTo28;
+	                                        #statAdr := INT_TO_WORD(WORD_TO_INT(#statAdr) + 28);
+	                                        #statState := #statReadState;
+	                                    ELSE
+	                                        #statCountCopyPae := 28;
+	                                    END_IF;
+	                                ELSE
+	                                    #statState := #statIdleState;
+	                                END_IF;
+	                            END_IF;
+	                        ELSE
+	                            #statReturnMoveBlkVar := MOVE_BLK_VARIANT(SRC := #statPae,
+	                                                                      COUNT := DINT_TO_UDINT(#statCountCopyPae),
+	                                                                      SRC_INDEX := 0,
+	                                                                      DEST_INDEX := #statOffset,
+	                                                                      DEST => #statReadData);
+	                            IF #statReturnMoveBlkVar = 0 THEN
+	                                #statCountCopyPae := 0;
+	                                #statOffset := #statOffset + 28;
+	                                #statLength := #statLength - 28;
+	                            END_IF;
+	                        END_IF;
+	                    ELSE
+	                        #tempStatus_W[1] := DWORD_TO_WORD(#statIoPartStatus);                 //Error has to BLKMOV occured
+	                        #tempStatus_W[0] := 16#0001;                           //functions-Error identifier
+	                        #status := #tempStatus;
+	                        #statState := #statErrorState;
+	                    END_IF;
+	                END_IF;
+	            END_IF;
+	            #InstSetIoPart(ID:=#hwId,
+	                           OFFSET:=#statAdrOffset,
+	                           LEN:=32,
+	                           STATUS=>#statIoPartStatus,
+	                           ERROR=>#statIoPartError,
+	                           OUTPUTS:=#statDat);
+	            
+	            IF #statIoPartError THEN
+	                #tempStatus_W[1] := DWORD_TO_WORD(#statIoPartStatus);   //Error has to BLKMOV occured
+	                #tempStatus_W[0] := 16#0001;                            //functions-Error identifier
+	                #status := #tempStatus;
+	                #statState := #statErrorState;
+	            END_IF;
+	            
+	        ELSE
+	            VariantPut(SRC := #statReadData,
+	                       DST := #identData);
+	            #statState := #statIdleState;
+	            #statBusy := false;
+	            #statDone := TRUE;
+	        END_IF;
+	        
+	        //------------------------------------------------------------------------------------------------------------//
+	        //-------------------------------------------------Error state------------------------------------------------//
+	        //---------------------------------------------error has occured----------------------------------------------//
+	        
+	    3://Error_State
+	        #tempError := TRUE;
+	        #statBusy := false;
+	        #error := #tempError;
+	        #statDone := false;
+	        #statTimerIn := false;
+	        #statTimerR := true;
+	        #statState := #statIdleState;
+	END_CASE;
+	
+	//------------------------------------------------------------------------------------------------------------//
+	//-------------------------------------------------Timer------------------------------------------------------//
+	//------------------------------------------------------------------------------------------------------------//
+	
+	#InstTonrTime(IN := #statTimerIn,                  //this timer will start, if the tag has left the antenna field
+	                        R := #statTimerR,
+	                        PT := #statTimerPt);
+	IF #InstTonrTime.Q THEN                           //error has occured. No tag on field during the 5 sec.
+	    #tempStatus_W[1] := 16#8101;                           //tag has left the field
+	    #tempStatus_W[0] := 16#0001;                           //identifier rfid errors
+	    #status := #tempStatus;
+	    #statState := #statErrorState;
+	END_IF;
+END_FUNCTION_BLOCK
+
